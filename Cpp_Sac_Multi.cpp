@@ -91,6 +91,9 @@ void saveImage(){
 
 				m_queue.pop();
 
+				std::cout << TAB1 << "Size of queue " << m_queue.size() << std::endl ;
+
+
 				if (m_queue.size() == 0 && acquisitionCompleted) {
 					localComplete = acquisitionCompleted;
 				}
@@ -104,7 +107,7 @@ void saveImage(){
 
 		std::cout << TAB1 << "Prepare image parameters\n";
 
-		std::string filename = "images/" +  std::to_string(pConverted->GetTimestamp()) +"_" + std::to_string(pConverted -> GetFrameId()) + ".jpg";
+		std::string filename = "/media/vinglabs/vikz_hdd/images1/" +  std::to_string(pConverted->GetTimestamp()) +"_" + std::to_string(pConverted -> GetFrameId()) + ".jpg";
 
 		Save::ImageParams params(
 			pConverted->GetWidth(),
@@ -435,6 +438,8 @@ void SynchronizeCamerasAndTriggerImage(Arena::ISystem* pSystem, std::vector<Aren
 	std::thread saving_thread_3(saveImage);
 	std::thread saving_thread_4(saveImage);
 	std::thread saving_thread_5(saveImage);
+	std::thread saving_thread_6(saveImage);
+
 
 
 	auto start = std::chrono::high_resolution_clock::now();
@@ -449,6 +454,7 @@ void SynchronizeCamerasAndTriggerImage(Arena::ISystem* pSystem, std::vector<Aren
 	saving_thread_3.join();
 	saving_thread_4.join();
 	saving_thread_5.join();
+	saving_thread_6.join();
 
 
 
