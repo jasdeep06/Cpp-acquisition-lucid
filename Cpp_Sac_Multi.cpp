@@ -14,7 +14,7 @@
 #define ERASE_LINE "                            "
 
 
-#define DELTA_TIME 167000000
+// #define DELTA_TIME 167000000
 
 #define EXPOSURE_TIME 185.0
 
@@ -33,67 +33,58 @@ std::mutex lock;
 std::condition_variable cv;
 
 
+//Schedule action commands are used to schedule simultanous acquisition on both the cameras
 void scheduleActionCommand(Arena::ISystem* pSystem,std::vector<Arena::IDevice*>& devices,int num_images){
     for(int i = 0 ; i < num_images ; i++){
         
-		auto l_start = std::chrono::high_resolution_clock::now();
-
-		// Arena::ExecuteNode(
-		// devices.at(0)->GetNodeMap(),
-		// "PtpDataSetLatch");
-
-		// // get latch
-		// int64_t ptpDataSetLatchValue = Arena::GetNodeValue<int64_t>(
-		// devices.at(0)->GetNodeMap(),
-		// "PtpDataSetLatchValue");
-
-		// auto l_stop = std::chrono::high_resolution_clock::now();
-		// auto l_duration = std::chrono::duration_cast<std::chrono::microseconds>(l_stop - l_start);
-        // 		std::cout << "Time taken by latch: "
-        //     << l_duration.count() << " microseconds " << std::endl;
-
-		// Arena::SetNodeValue<int64_t>(
-        //     pSystem->GetTLSystemNodeMap(),
-        //     "ActionCommandExecuteTime",
-        //     ptpDataSetLatchValue + DELTA_TIME);
+		//Fire action command now
 		Arena::SetNodeValue<int64_t>(
             pSystem->GetTLSystemNodeMap(),
             "ActionCommandExecuteTime",
             0);
         std::cout << TAB1 << "Fire action command\n";
 
+		//excecute action command
         Arena::ExecuteNode(
             pSystem->GetTLSystemNodeMap(),
             "ActionCommandFireCommand");
+		//to indicate polling to start	
 		acquisitionStarted = true;
+		//sleep for desired FPS
         std::this_thread::sleep_for(std::chrono::duration<float>(0.167));
     }
 	acquisitionCompleted = true;
 }
 
-// void saveImage(Arena::IImage* pImage, const char* filename){
-
 
 void saveImage(){
 
+	//variable to track if save image has to terminate.
 	bool localComplete = false;
+
+	//pointer to copy of buffer
 	Arena::IImage* pCopy;
 
 	while(!localComplete){
 
+		//critical area starts
 		{
+				//acquire lock over the queue
 				std::unique_lock<std::mutex> mu(lock);
 
-				// wait for acquire images (producer) to notify
+				//if queue is empty,release lock and wait
 				cv.wait(mu, []() {return m_queue.size() > 0; });
 
+				//get buffer copy from the queue
 				pCopy = m_queue.front();
 
+				//remove buffer copy from the queue
 				m_queue.pop();
 
+				//to track if saving threads are enough so that queue is mostly empty
 				std::cout << TAB1 << "Size of queue " << m_queue.size() << std::endl ;
 
-
+				//if queue us empty and acquisition is completed,exit
 				if (m_queue.size() == 0 && acquisitionCompleted) {
 					localComplete = acquisitionCompleted;
 				}
@@ -101,13 +92,17 @@ void saveImage(){
 
 		std::cout << TAB1 << "Convert image to " << GetPixelFormatName(PIXEL_FORMAT) << "\n";
 
+		//convert image to BGR8
 		auto pConverted = Arena::ImageFactory::Convert(
 			pCopy,
 			PIXEL_FORMAT);
 
 		std::cout << TAB1 << "Prepare image parameters\n";
 
-		std::string filename = "/media/vinglabs/vikz_hdd/images1/" +  std::to_string(pConverted->GetTimestamp()) +"_" + std::to_string(pConverted -> GetFrameId()) + ".jpg";
+		//filename to be saved
+		std::string filename = "images/" +  std::to_string(pConverted->GetTimestamp()) +"_" + std::to_string(pConverted -> GetFrameId()) + ".jpg";
+
+		//Saving image
 
 		Save::ImageParams params(
 			pConverted->GetWidth(),
@@ -124,7 +119,7 @@ void saveImage(){
 
 		writer << pConverted->GetData();
 
-		// destroy converted image
+		// destroy converted buffer and buffer copy to avoid memory leaks
 		Arena::ImageFactory::Destroy(pConverted);
 		Arena::ImageFactory::Destroy(pCopy);
 
@@ -135,55 +130,77 @@ void saveImage(){
 void pollBuffer(std::vector<Arena::IDevice*>& devices,int num_images){
 	
 	std::cout << "entered..." << std::endl;
+	//if acquisition has not started yet,wait for it to start
 	while(!acquisitionStarted){
 			std::cout << "waiting to start....." << std::endl;
-		continue;
+			continue;
 	}
+
 	std::cout << "Acquisition started....."<< std::endl;
+
+	//not yet formulated condition for polling to terminate(TODO)
+	//so run forever
     while(1){
+		//For benchmarking polling
 		auto start = std::chrono::high_resolution_clock::now();
+		//Loop over both the cameras
         for (size_t i = 0; i < devices.size(); i++)
         {
+			
+			//get camera
             Arena::IDevice* pDevice = devices.at(i);
+			//get device serial number
             GenICam::gcstring deviceSerialNumber = Arena::GetNodeValue<GenICam::gcstring>(pDevice->GetNodeMap(), "DeviceSerialNumber");
             
             std::cout << TAB3 << "Timestamp: ";
 			auto transfer_start = std::chrono::high_resolution_clock::now();
-
-            // Initiate image transfer from current camera
+			//start transfer image from camera
             Arena::ExecuteNode(pDevice->GetNodeMap(), "TransferStart");
+
+			//Benchmarking the wait time
 			auto wait_start = std::chrono::high_resolution_clock::now();
+
+			//get image from the camera
             Arena::IImage* pImage = pDevice->GetImage(3000);
+			
 			auto wait_end = std::chrono::high_resolution_clock::now();
 			auto wait_duration = std::chrono::duration_cast<std::chrono::microseconds>(wait_end - wait_start);
         		std::cout << "Time taken by wait: "
             << wait_duration.count() << " microseconds " << pImage -> GetFrameId() <<std::endl;
 
+			//stop image transfer
             Arena::ExecuteNode(pDevice->GetNodeMap(), "TransferStop");
+			
+			//Benchmarking transfer time
 			auto transfer_end = std::chrono::high_resolution_clock::now();
 			auto transfer_duration = std::chrono::duration_cast<std::chrono::microseconds>(transfer_end - transfer_start);
         		std::cout << "Time taken by transfer: "
             << transfer_duration.count() << " microseconds" << pImage -> GetFrameId() << std::endl;
 
+			//benchmarking copy
 			auto copy_start = std::chrono::high_resolution_clock::now();
-            Arena::IImage* pCopy = Arena::ImageFactory::Copy(pImage);
+            //copy image so that buffer canbe requeued
+			Arena::IImage* pCopy = Arena::ImageFactory::Copy(pImage);
+			
 			auto copy_end = std::chrono::high_resolution_clock::now();
 			auto copy_duration = std::chrono::duration_cast<std::chrono::microseconds>(copy_end - copy_start);
         		std::cout << "Time taken by copy: "
             << copy_duration.count() << " microseconds " << pImage -> GetFrameId() <<std::endl;
 
-            {
-                // lock the thread, auto unlocks at the end of critical section
+            //critical section starts
+			{
+			   //acquire lock
 			    std::unique_lock<std::mutex> mu(lock);
 
-			    // enqueue
+			    // enqueue the copied image/buffer
 			    m_queue.push(pCopy);
             
             }
 			cv.notify_all();
 
 
-            pDevice->RequeueBuffer(pImage);
+            //requeue the buffer
+			pDevice->RequeueBuffer(pImage);
 			
         }
 		auto stop = std::chrono::high_resolution_clock::now();
@@ -200,6 +217,12 @@ void pollBuffer(std::vector<Arena::IDevice*>& devices,int num_images){
 
 void SynchronizeCamerasAndTriggerImage(Arena::ISystem* pSystem, std::vector<Arena::IDevice*>& devices)
 {
+
+	/*
+	*********************************************************
+	This section deals with setting camera parameters.
+	*********************************************************
+	*/
 	
 	std::vector<GenICam::gcstring> exposureAutoInitials;
 	std::vector<double> exposureTimeInitials;
@@ -250,38 +273,66 @@ void SynchronizeCamerasAndTriggerImage(Arena::ISystem* pSystem, std::vector<Aren
 		std::cout << TAB3 << "Exposure: ";
 
 		Arena::SetNodeValue<GenICam::gcstring>(
+		pDevice->GetNodeMap(),
+		"UserSetSelector",
+		"UserSet1");
+
+		// execute the load
+		Arena::ExecuteNode(
 			pDevice->GetNodeMap(),
-			"ExposureAuto",
-			"Off");
+			"UserSetLoad");
+
+		// Arena::SetNodeValue<GenICam::gcstring>(
+		// 	pDevice->GetNodeMap(),
+		// 	"ExposureAuto",
+		// 	"Off");
 
         // std::cout << Arena::GetNodeValue<GenICam::gcstring>(pDevice->GetTLStreamNodeMap(), "StreamBufferHandlingMode") << "\n";
-		Arena::SetNodeValue<double>(
-			pDevice->GetNodeMap(),
-			"ExposureTime",
-			EXPOSURE_TIME);
+		// Arena::SetNodeValue<double>(
+		// 	pDevice->GetNodeMap(),
+		// 	"ExposureTime",
+		// 	EXPOSURE_TIME);
 
 		std::cout << Arena::GetNodeValue<double>(pDevice->GetNodeMap(), "ExposureTime") << "\n";
 
 		std::cout << TAB3 << "Trigger: ";
 
-		Arena::SetNodeValue<GenICam::gcstring>(
-			pDevice->GetNodeMap(),
-			"TriggerSelector",
-			"FrameStart");
+		// Arena::SetNodeValue<GenICam::gcstring>(
+		// 	pDevice->GetNodeMap(),
+		// 	"TriggerSelector",
+		// 	"FrameStart");
 
-		Arena::SetNodeValue<GenICam::gcstring>(
-			pDevice->GetNodeMap(),
-			"TriggerMode",
-			"On");
+		// Arena::SetNodeValue<GenICam::gcstring>(
+		// 	pDevice->GetNodeMap(),
+		// 	"TriggerMode",
+		// 	"On");
 
-		Arena::SetNodeValue<GenICam::gcstring>(
-			pDevice->GetNodeMap(),
-			"TriggerSource",
-			"Action0");
+		// Arena::SetNodeValue<GenICam::gcstring>(
+		// 	pDevice->GetNodeMap(),
+		// 	"TriggerSource",
+		// 	"Action0");
+
+		
+		// Arena::SetNodeValue<int64_t>(
+		// 	pDevice->GetNodeMap(),
+		// 	"GevSCPSPacketSize",
+		// 	9000
+		// );
+
+		// Arena::SetNodeValue<int64_t>(
+		// 	pDevice->GetNodeMap(),
+		// 	"GevSCPD",
+		// 	80000
+		// );
 
 		std::cout << Arena::GetNodeValue<GenICam::gcstring>(pDevice->GetNodeMap(), "TriggerSource") << "\n";
 
 
+		std::cout << TAB3 << "Packet Delay" << Arena::GetNodeValue<int64_t>(pDevice->GetNodeMap(), "GevSCPD") << std::endl;
+
+		std::cout << TAB3  << "Packet SIze" << Arena::GetNodeValue<int64_t>(pDevice->GetNodeMap(), "GevSCPSPacketSize") << std::endl;
+
+		
 		std::cout << TAB3 << "Action commands: ";
 
 		Arena::SetNodeValue<GenICam::gcstring>(
@@ -367,6 +418,19 @@ void SynchronizeCamerasAndTriggerImage(Arena::ISystem* pSystem, std::vector<Aren
 	std::cout << "prepared\n";
 
 	
+	/*
+		****************************************************
+		Setting parameters end
+		****************************************************
+	*/
+
+
+	/*
+		*****************************************************
+		This section deals with PTP syncronization
+		*****************************************************
+	*/
+
 	std::cout << TAB1 << "Wait for devices to negotiate. This can take up to about 40s.\n";
 
 	std::vector<GenICam::gcstring> serials;
@@ -428,11 +492,26 @@ void SynchronizeCamerasAndTriggerImage(Arena::ISystem* pSystem, std::vector<Aren
 		devices.at(i)->StartStream(15);
 	}
 
-	std::cout << TAB1 << "Set action command to " << DELTA_TIME << " nanoseconds from now\n";
 
+	/*
+		*****************************************************
+		PTP syncronization ends
+		*****************************************************
+	*/
+
+
+	/*
+		****************************************************
+		This code needs to be reviewed
+		****************************************************
+	*/
 
 	std::cout << "Starting polling thread..." << std::endl;
+
+	//polling thread polls buffers from the camera and pushes a copy of them into a queue
+	//the original buffer is requeued for the camera to use again
 	std::thread polling_thread_1(pollBuffer,std::ref(devices),1000000);
+	//saving threads pops the buffer from queue,converts it from BayerRG8 to BGR8 and saves it as ".jpg"
 	std::thread saving_thread_1(saveImage);
 	std::thread saving_thread_2(saveImage);
 	std::thread saving_thread_3(saveImage);
@@ -443,6 +522,7 @@ void SynchronizeCamerasAndTriggerImage(Arena::ISystem* pSystem, std::vector<Aren
 
 
 	auto start = std::chrono::high_resolution_clock::now();
+	//starts acquisition
     scheduleActionCommand(pSystem,devices,1000000);
     auto stop = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
@@ -458,7 +538,6 @@ void SynchronizeCamerasAndTriggerImage(Arena::ISystem* pSystem, std::vector<Aren
 
 
 
-
 	// stop stream
 	std::cout << TAB1 << "Stop stream\n";
 
@@ -466,6 +545,14 @@ void SynchronizeCamerasAndTriggerImage(Arena::ISystem* pSystem, std::vector<Aren
 	{
 		devices.at(i)->StopStream();
 	}
+
+
+	/*
+
+		*********************************************************
+		This code deals with restoring camera parameters
+		*********************************************************
+	*/
 
 	// return nodes to their initial values
 	for (size_t i = 0; i < devices.size(); i++)
@@ -504,18 +591,14 @@ int main()
 	// flag to track when an exception has been thrown
 	bool exceptionThrown = false;
 
-	std::cout << "Cpp_ScheduledActionCommands\n";
-	// std::cout << "\nNote: The PTP auto-negotiation phase can take about 40s depending on the "
-	// 		<< "initial PTP state of each device\n\n";
-	// std::cout << "Example may overwrite 'ActionDeviceKey' -- proceed? ('y' to continue) ";
-	// char continueExample = 'a';
-	// std::cin >> continueExample;
+	std::cout << "Running program \n";
+
 
 	if (true)
 	{
+		//Device discovery
 		try
 		{
-			// prepare example
 			Arena::ISystem* pSystem = Arena::OpenSystem();
 			pSystem->UpdateDevices(100);
 			std::vector<Arena::DeviceInfo> deviceInfos = pSystem->GetDevices();
@@ -528,7 +611,6 @@ int main()
 
 				std::cout << "Press enter to complete\n";
 
-				// clear input
 				while (std::cin.get() != '\n')
 					continue;
 
@@ -541,14 +623,15 @@ int main()
 				devices.push_back(pSystem->CreateDevice(deviceInfos.at(i)));
 			}
 
-			// run example
+
+			//Call to the entry function
 			std::cout << "Commence example\n\n";
 			SynchronizeCamerasAndTriggerImage(pSystem, devices);
 			std::cout << "\nExample complete\n";
 			
 
 
-			// clean up example
+			// clean up 
 			for (size_t i = 0; i < devices.size(); i++)
 			{
 				pSystem->DestroyDevice(devices.at(i));
